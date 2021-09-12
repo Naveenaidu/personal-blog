@@ -10,7 +10,8 @@ module.exports = {
     // See all options: https://github.com/LekoArts/gatsby-themes/blob/master/themes/gatsby-theme-minimal-blog/gatsby-config.js
     siteTitleAlt: `Naveen Naidu`,
     siteTitle: 'Naveen Naidu',
-    author: '@naveenaidu'
+    author: '@naveenaidu',
+    url: "https://naveenaidu.dev"
   },
   plugins: [
     {
@@ -92,7 +93,13 @@ module.exports = {
         path: `${__dirname}/src/`,
         ignore: [`**/\.*`], // ignore files starting with a dot
       },
-    },  
+    },
+	{
+      resolve: `gatsby-plugin-disqus`,
+       options: {
+         shortname: `naveenaidu-dev`
+       }
+    },
     `gatsby-plugin-sitemap`,
     {
       resolve: `gatsby-plugin-manifest`,
