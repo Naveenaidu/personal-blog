@@ -9,6 +9,8 @@ module.exports = {
     // You can also add new values here to query them like usual
     // See all options: https://github.com/LekoArts/gatsby-themes/blob/master/themes/gatsby-theme-minimal-blog/gatsby-config.js
     siteTitleAlt: `Naveen Naidu`,
+    siteTitle: 'Naveen Naidu',
+    author: '@naveenaidu'
   },
   plugins: [
     {
@@ -163,7 +165,7 @@ module.exports = {
               }
             `,
             output: `rss.xml`,
-            title: `Minimal Blog - @lekoarts/gatsby-theme-minimal-blog`,
+            title: `Naveen's Blog - @lekoarts/gatsby-theme-minimal-blog`,
           },
         ],
       },
