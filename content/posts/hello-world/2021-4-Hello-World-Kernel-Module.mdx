@@ -1,0 +1,290 @@
+---
+title: Hello World! Kernel Module
+date: 2021-08-05
+draft: false
+tags:
+  - lkmp, linux, kernel, module
+---
+
+Yohooooo people!
+
+Today we'll learn how to greet hoomans from Linux Kernel :P, i.e we'll learned
+how to write "Hello World!" Kernel Module \o/
+
+We'll directly jump into the action and I'll explain what's happening in the 
+later sections :)
+
+### Hello World! - Kernel Module
+
+**1. Prepare your cauldron for the magical experiment**
+```bash
+mkdir hello-world
+cd hello-world
+```
+
+**2. Let's put our spells into the cauldron**
+```bash
+vim hello-world.c
+```
+Add the following into the `hello-world.c` file.
+
+```c
+/*
+ * hello_world.c -- A Kernel Module that prints Hello World
+ */
+#include<linux/init.h>
+#include<linux/module.h>
+
+// This function is executed when you load the module using insmod
+static int __init helloworld_init(void)
+{
+	printk(KERN_INFO KBUILD_MODNAME ": Hello Confused Hooman!! \n");
+	/*
+	 * A non 0 return means that module can't be loaded.
+	 */
+	return 0;
+
+}
+
+static void __exit helloworld_cleanup(void)
+{
+	printk(KERN_INFO KBUILD_MODNAME ": Sayonara Hooman. \n");
+}
+
+// Register the module
+module_init(helloworld_init);
+module_exit(helloworld_cleanup);
+
+// Information Regarding the module
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Naveen Naidu");
+MODULE_DESCRIPTION("A Hello World Kernel Module");
+```
+
+**3. Create a new spell which will invoke the magic**
+
+```bash
+vim Makefile
+```
+
+Time for creating the new spell
+
+```Makefile
+obj-m := hello_world.o
+KDIR := /lib/modules/$(shell uname -r)/build
+
+all:
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
+
+clean:
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
+
+```
+
+**4. Speak the new spell**
+```bash
+make all
+```
+
+**5. Time to see the magic in action**
+```bash
+# Add the kernel module
+sudo insmod hello_world.ko 
+sudo dmesg -t -l info > dmesg_current_info 
+
+# Time to see hello world message
+cat dmesg_current_info | grep "hello"
+
+# Remove the module and see if the module say's Byee
+sudo rmmod hello_world.ko
+sudo dmesg -t -l info > dmesg_current_info 
+
+# See the Goodbye message from our module
+cat dmesg_current_info | grep "hello"
+```
+
+TADA!! you have written your first Kernel module \o/ \o/
+
+> Note: For the folks who don't wanna try it out on your system but still wanna
+> feast on the magic :P, I prepared an asciinema for you. Have a look at 
+> [asciinema](https://asciinema.org/a/DnhUiaxiWKqEchecYN1iHeeCK)
+
+----------
+
+### Time for Explanation!! & My learning while doing this ^^
+
+#### What are Kernel Modules 
+
+These are the type of code that could be loaded and unloaded into the kernel on
+demand. This helps in extending the functionality of the kernel without the need
+to reboot the system.
+
+Without the functionality of Kernel modules the only way we could have added new
+code was by statically linking it to the kernel that would mean, building the
+kernel after making any change. This would have had a very adverse impact on the
+development time of new features. 
+
+Having Kernel Modules also helps in easy debugging of the issues in a module
+instead of panicking the Kernel and crashing it.
+
+#### Basic Structure of a Kernel Module
+
+A kernel module must have at least two functions:
+1. Initialization “start” function , init_module()
+2. Cleanup Function, cleanup_module()
+
+The Initialization function is called whenever the kernel is loaded or whenever
+it is insmoded and the “end”/cleanup function is called whenever we unload/rmmod
+the module.
+
+Though the first google results directed me to the page where the `init_module()`
+function was used, but while browsing through the kernel code these functions
+were rarely used and further reading I realized that I need not name my
+functions as `init_module()` or `cleanup_module` mandatorily. 
+
+With the Kernel 2.4, I could use `module_init()` and `module_exit()` to name 
+the Initialization function and the ending function.
+
+#### Logging/Printing from inside a Kernel module
+
+In order to print/log information from inside the kernel we use a function
+called “printk()”. The format of it is as follows:
+
+```c
+printk( <LOG LEVEL>  <MORE OPTIONS> "Message String");
+```
+
+There is also a improved version of “printk()” which is “pr_info()” or “pr_*”
+variants. For the sake of this task, I chose to use the “printk()” since it
+suited well for the needs of the task.
+
+The logs/messages from the printk() is stored/logged in the `/var/log/kern.log`
+and could easily be accessed using dmesg.
+
+##### Log Levels available
+
+- **KERN_EMERG**: Used for emergency messages, usually those that precede a crash.
+- **KERN_ALERT**: A situation requiring immediate action.
+- **KERN_CRIT**: Critical conditions, often related to serious hardware or software failures.
+- **KERN_ERR**: Used to report error conditions; device drivers often use KERN_ERR to report hardware difficulties.
+- **KERN_WARNING**: Warnings about problematic situations that do not, in themselves, create serious problems with the system.
+- **KERN_NOTICE**: Situations that are normal, but still worthy of note. A number of security-related conditions are reported at this level.
+- **KERN_INFO**: Informational messages. Many drivers print information about the hardware they find at startup time at this level.
+- **KERN_DEBUG**: Used for debugging messages.
+
+For the sake of the task, I chose to use the `KERN_INFO` log level.
+
+-----
+
+#### Building a Kernel Module
+
+##### <u>Types of Kernel Module</u>
+
+There are two kinds of kernel modules:
+
+- **In Tree Modules** - Modules present in the linux tree
+- **Out of the Tree modules** - Modules external to the linux tree
+
+The way we build these two modules are slightly different but the gist says the
+same.
+
+The following information is gathered after reading through the documentation in
+[Documentation/kbuild/modules.rst](https://www.kernel.org/doc/Documentation/kbuild/modules.rst).
+Though I was not able to comprehend everything present in the documentation (I
+hope someday with experience I could be able to do so :) but it was an
+interesting read and helped me a lot with my task.
+
+##### <u>Build External Modules</u>
+
+The main highlights/important points for this is:
+
+- We must use “kbuild” only so that we could stay compatible with the changes in
+the build infrastructure and also helps us choose the right flags for GCC.
+- When building out of tree module, we must have a complete and precompiled kernel
+source tree on our system. This is necessary since modules are linked against
+the object files found in the kernel source tree. 
+- We must not compile our module
+with one kernel version and then use the same module with other Kernel version.
+This might lead to run time errors since the symbols might differ between kernel
+versions.
+
+##### 1. Creating a Local Makefile
+
+Create a local makefile where we define a kbuild variable like below.
+
+```Makefile
+obj-<X> := <module_name>.o
+```
+
+The `<X>` stands for kbuild variable and `X` takes one of the following values
+
+- `X = n` , Do not compile the module <br/>
+- `X = y`  , Compile the module and statically link with kernel image <br/>
+- `X = m` , Compile the module as a dynamically loadable kernel module
+
+The above line is enough for the Makefile, but we can also add additional make
+rules to make our life  easy. 
+
+##### 2. Installing the Modules
+
+The command syntax for this is:
+
+```Makefile
+make -C $KDIR M=$PWD [target]
+```
+
+`KDIR` stands for the default kernel directory where the source is located. 
+
+`M=$PWD`, this informs kbuild that an external module is being built. The value
+that we give to the M is the absolute path where the external module (kbuild
+file) is present.
+
+##### 3. Combining the above two things in a Makefile
+
+To make our life easier we could combine the above two commands in our Makefile.
+For my Makefile, I have the following thing
+
+```Makefile
+obj-m := hello_world.o 
+KDIR := /lib/modules/$(shell uname -r)/build 
+
+all: 
+    $(MAKE) -C $(KDIR) M=$(PWD) modules 
+clean: 
+     $(MAKE) -C $(KDIR) M=$(PWD) clean 
+```
+
+Thus when you run `make all`, the kbuild system will build the `hello_world.o`
+file from the `hello_world.c` and after linking, will result in the kernel
+module `hello_world.ko` being created. And this will also install the module.
+
+##### <u>Loading/Unloading the Module</u>
+
+##### 1. To Load the module
+
+You can use the `insmod` command to the `.ko` file that is created after the
+make command. This will load the module. If you want to see if the module is
+loaded you could use the `lsmod` command.
+
+For example in my case:
+
+```bash
+sudo insmod hello_world.ko
+sudo lsmod | grep "hello"
+```
+
+##### 2. To Unload the module
+
+Use the `rmmod` command to unload the module.
+
+For example in my case:
+
+```bash
+sudo rmmod hello_world.ko
+sudo lsmod | grep "hello"
+```
+
+----
+
+That's the end of this post folks!!<br />
+Sayonara :3
