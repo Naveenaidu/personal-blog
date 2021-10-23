@@ -1,0 +1,157 @@
+---
+title: Pathway to get started with PCI Subsytem
+date: 2021-09-20
+draft: false
+tags:
+  - lkmp
+  - linux
+  - kernel
+  - pci
+---
+
+Heyoo Folks!
+
+For the last few months, I have been working on understanding PCI, PCIE
+specifications and how the PCI subsystem works in the Linux Kernel. Why?
+Beause, that's the subsystem I am working on as part of Linux Kernel mentorship
+program.
+
+PCI subsystem is very vast and in order to understand the code and why's, you
+need an adequate amount of knowledge. If you dive into reading the code
+headfirst - You'll find yourself in a situation similar to that of a person
+jumping from a building without safety line attached.
+
+I did the above mistake and that cost me a lot of hair xD 
+
+I now realize that there a lot of moving parts to get stared with PCI subsystem.
+And during that time, I've read a lot (I literally mean a lot) of random blogs
+and spec sheets etc. And the jumbled reading of various things messed up my
+head more :p
+
+But luckily, I somehow sifted through all those and I am now capable of
+understanding the code and also follow along atleast some of the conversations
+that happen on the Mailing list.
+
+I would love to write a series of blog posts explaining my understanding, but
+currently I am very busy handling both my job at Hasura and Linux Kernel
+Mentorship so I do not have any free time to do so. 
+
+So I decided, I can atleast make up a list of resources and provide a structured
+pathway which people could use to start their adventure with PCI subsystem and
+hopeful, help save people form getting bald ^^
+
+TL;DR - This is infact a list, I wish I had when I started out, which would have
+saved me from a lot of frustation - but I must admit, I did enjoy the eureka
+moment after the all the frustation :)
+
+> Note: The following list might not suite to everyone's liking, if the list
+> was not helpful. I apologize for the inconvenience caused ^^'
+
+> You can read the content in any order you want, but I would personally suggest
+> that you go through it in the order
+
+> NOTE: Don't worry if you do not understand everything there is in the links. 
+> I had to read through these things twice or thrice to even understand what's
+> happening, so do not fret if nothing makes sense. Just push through it - All of
+> this is getting registered in some corner of your memory. You will recall these
+> sections when the time arises :)
+> 
+> The goal here is to first get a breadth first view into everything necessary,
+> that way you atleast know something of everything. And while working on
+> a particular part of PCI subsystem, if you ever feel you need to know more,
+> you would always know where to refer back to.
+>
+> Honestly, consuming everything given down would easily take atleast a month or
+> two. So it's totally okay. No need to rush through it :D
+
+### 1. Brief PCI, PCIE Introduction
+
+Let's start with getting an high overview of what this giant beast is.
+
+1. [How PCI works](https://computer.howstuffworks.com/pci.htm)
+2. [PCI - Wikipedia](https://en.wikipedia.org/wiki/Peripheral_Component_Interconnect)
+3. [PCIE - Wikipedia](https://en.wikipedia.org/wiki/PCI_Express)
+4. [Video Series - GNU/Linux &P
+PCIE](https://www.youtube.com/playlist?list=PLCGpd0Do5-I1hZpk8zi9Zh7SCnHrIQlgT) - This is a really good 
+video series which gives you a glimpse into how the software interacts with the
+PCI hardware.
+
+For the wiki links, please don't go down the rabbit hole of clicking all
+the links present there, REMEMBER all we are trying to do right now is trying to
+get a very very brief overview of what the heck PCI is :)
+
+> Note: Linux Device Drivers, Third Edition book is from now refered as LDD 
+
+### 2. Linux Device Drivers
+
+In this section, let's understand how does the software and hardware interact
+with each other in an Operating system.
+
+
+1. [LDD - Chapter 1 and 2](https://lwn.net/Kernel/LDD3/)
+2. [Linux Device Drivers for your GF - Chapter 1](https://sysplay.github.io/books/LinuxDrivers/book/Content/Part01.html)
+3. [LDD - Chapter 3](https://lwn.net/Kernel/LDD3/)
+4. [Linux Device Drivers for your GF - Chapter 2 to 6](https://sysplay.github.io/books/LinuxDrivers/book/Content/Part02.html)
+
+### 3. Linux Device Drivers - PCI
+
+1. [LDD - Chapter 8 to 12](https://lwn.net/Kernel/LDD3/)
+2. [Linux Device Drivers for your GF - Chapter 7 to 9](https://sysplay.github.io/books/LinuxDrivers/book/Content/Part07.html)
+
+### 4. Understanding PCI/PCIe at more basic level
+
+In this section, we will learn a little more about how do PCIe devices work 
+at the hardware layer and also start getting a better understanding of PCI
+subsystem in linux.
+
+This understanding will help you understand why a particular section of code in
+PCI subsystem might have been written the way it was.
+
+First, let me provide you with the specifications you would generally have to
+keep referring to, in order to get a more detailed understanding of any specific
+section. I really would not recommend that you sit down and read the entire
+specification at one go (It is very huge) - you'll end confusing yourself.
+(Atleast that’s what happened when I dared to do that ^^')
+
+**References**
+1. https://www.cl.cam.ac.uk/~djm202/pdf/specifications/pci/PCI_LB3.0_CB-2-6-04.pdf
+2. https://www.cl.cam.ac.uk/~djm202/pdf/specifications/pcie/PCI_Express_Base_Rev_2.0_20Dec06a.pdf
+3. https://www.mindshare.com/files/ebooks/PCI%20Express%20Technology%203.0.pdf
+
+Back to the list now :)
+
+
+1. [PCI - OS Dev Wiki](https://wiki.osdev.org/PCI)
+2. [TLDP - PCI](https://tldp.org/LDP/tlk/dd/pci.html#tthFrefAAB)
+3. [Video Series -PCIeArchitecture](https://www.youtube.com/channel/UC6qVdkKlqOg-Yp8iUaIIjJA/videos):
+Start watching from `PCIe Architecture: Lecture 1`, If you really wish to - you
+might wanna read the first 4 chapters in [PCIe Base Spec v2.0](https://www.cl.cam.ac.uk/~djm202/pdf/specifications/pcie/PCI_Express_Base_Rev_2.0_20Dec06a.pdf)
+4. [Down to the TLP: How PCI express devices talk](http://xillybus.com/tutorials/pci-express-tlp-pcie-primer-tutorial-guide-1):
+There are two parts in the tutorial. I would definitely recomment reading both
+:)
+5. [PCI subsystem](https://www.linux-mips.org/wiki/PCI_Subsystem): This gives a
+very brief intro to how the code flows in PCI subsystem. It is a little
+outdated, but it should give you a really good idea of how to read the code.
+
+That's it folks, That's the end of the list :)
+
+There is so much more to learn and I'm coming across new things every day as I
+work during the mentorship. But fear not! The above knowledge would help you
+equip you with the necessary tools needed to win the warfare xD
+
+Once I get more free time, I would definitely - write more stuff regarding the
+tasks I am working on the resources I am using. But until then, Take care - Have
+Fun with your journey \o/
+
+Sayonara Hooomansss!
+
+---
+
+import Comments from '../../components/Comments';
+
+<Comments
+  post={{
+    identifier: 'hello-world',
+    
+  }}
+/>
