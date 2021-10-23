@@ -81,14 +81,14 @@ system. Installing them from the Ubuntu repo did not work out, because the
 mainline-kernel needed a pahole which was greater than the current available
 version.
 
-TODO: image 1
+![pahole-not-found](./img-1-pahole-not-found.png)
 
 Upon searching I found that the [latest dwarves
 library](https://packages.ubuntu.com/search?keywords=dwarves) supported for
 (20.04 Ubuntu) was 1.17.1 was upon downloading the deb and installing it I ran
 into another problem.
 
-TODO: image 2
+![dwarves](./img-2-dwarves.png)
 
 Upon further discovery I found that the [above error was
 patched](https://bugs.launchpad.net/ubuntu/+source/dwarves-dfsg/+bug/1928244) in
@@ -107,8 +107,6 @@ it from source](https://github.com/acmel/dwarves).
 Due to the above library not being present in my system. I got the following
 error.
 
-TODO: image 3
-
 Fixed the above problem by [installing the
 zstd](https://howtoinstall.co/en/zstd) package.
 
@@ -118,19 +116,18 @@ After successfully building the image, when I tried to boot into the mainline
 kernel, I got stuck at the loading of the initrd image. The error looked 
 something like the below:
 
-TODO: image 4 - stuck at initrams
-
 When I investigated further, I saw that the size of the initrd image of the new
 kernel was in hundreds of MB’s (750 MB to be specific)
 
-TODO: image 5
+![initrams-large-size](./img-3-initrams-large-size.jpg)
 
-Notice the size of the `initrd.img-5.14.0-rc3` file in the above image
+Notice the size of the `initrd.img-5.14.0-rc3` file in the above image, it's a
+whooping 778 MB 🤯
 
 Reading further I understood that Linux Kernel has two stage booting process.
 First the initrd image is loaded and then that loads the linux kernel. And grub
 is responsible for the initial step. But since the initrd image size was too
-long, grub was having a difficult time trying to load the image and then finding
+large, grub was having a difficult time trying to load the image and then finding
 where the linux kernel is. 
 
 Trying to figure out what actually happened, I came across this [Stack Overflow

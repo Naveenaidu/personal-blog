@@ -200,7 +200,7 @@ two methods have their own use cases.
 KASAN assigns a shadow bit for each byte of data. The shadow bit represents if
 that byte is corrupted or not.
 
-IMAGE 1
+![kernel-memory](./img-1-kernel-mem.png)
 
 The values in the shadow bit will range from ( -1 <= 0 <= 8 ).
 
@@ -211,7 +211,7 @@ memory is well within bounds and it’s not freed.
 3. **Integer N**, If the value of the shadow bit is an integer other than 0 or -1, then
 it means only `N` bits of the byte are good.
 
-IMAGE 2
+![kernel-memory-shadow](./img-2-kernel-mem-shadow.png)
 
 KASAN takes around 16TB of virtual memory. And the mapping between kernel memory
 stuff and Shadow block happens using the following formula:
@@ -268,7 +268,7 @@ this is possible because the heap objects are allocated next to each other.
 
 But KASAN inserts Red Zones between the heap objects.
 
-IMAGE 4
+![red-zone](./img-3-red-zone.png)
 
 The shadow-bit for the above red-blocks of the memory are marked as bad. And if
 kernel tries to access it, KASAN throws an error. This way, you are not
@@ -294,7 +294,7 @@ most likely return the same object which was freed.
 
 Why is the above way bad? Let's take a look.
 
-IMAGE 5
+![uaf-brief-overview](./img-4-uaf-1.png)
 
 To understand the above image, let’s take a very simple example. I have the
 following pseduocode:
@@ -349,9 +349,11 @@ if (auth->flag == 1) {
 To avoid the above case to happen, KASAN uses the concept of Quarantine for heap
 objects. As shown below.
 
-IMAGE 6
+![uaf-brief-overview](./img-5-uaf-2.png)
 
-IMAGE 7
+![uaf-brief-overview](./img-6-uaf-3.png)
+
+A
 
 **To summarize:**
 

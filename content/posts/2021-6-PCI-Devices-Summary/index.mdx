@@ -52,7 +52,7 @@ system and devices connected to them.
 
 #### PCI Device list in my system
 
-IMAGE 1
+![pci-dev-list](./img-1.png)
 
 In the above image we can see that each device in the list has a unique number.
 The unique number format is as follows:
@@ -65,7 +65,7 @@ For eg: The VGA compatible controller has the unique ID of (00::02.0), this
 means that the VGA compatible controller is present on Bus Number 0, and the
 device number for this is 1 and the function number is 0.
 
-IMAGE 2
+![pci-dev-list-zoom](./img-2.png)
 
 Similarly if you see the above image with lspci tree, the device with unique id
 (00::06.0) which is the *PCI bridge: Intel Corporation Device 9a09 (rev 01)* is a
@@ -144,13 +144,15 @@ has both upstream port and downstream port.
 and from the CPU. Kinda like leaf nodes of a tree. This device only has an
 upstream port.
 
-IMAGE 3
+![types-pci-devs](./img-3.jpeg)
 
 The configuration space of the PCI devices are of two types:
 1. Type 0 - Headers of End Point devices
 2. Type 1 - Headers of Bridge devices
 
-IMAGE 4
+![types-pci-headers](./img-4.jpeg)
+
+[Image Ref](https://www.programmersought.com/article/80536175488/)
 
 The registers marked in `Blue` are mandatory. It is from these registers the
 `lspci` tool fetches it’s information from.
@@ -185,7 +187,7 @@ have already been mapped into the processor’s address space.
 
 ### PCI Bus Enumeration
 
-IMAGE 5
+![pci-bus-enum](./img-5.jpeg)
 
 The Bus that starts from the CPU is always given the number zero (0). And the
 rest of the bus that gets created using PCI bridge are given number starting
@@ -239,7 +241,7 @@ on the bus, gets the information about them and assigns the required memory
 space of each device. Following is what the final unique ID of each device will
 look like:
 
-IMAGE 6
+![pci-bus-enum-final](./img-6.jpeg)
 
 -----
 -----
