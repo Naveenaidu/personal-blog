@@ -11,7 +11,11 @@ module.exports = {
     siteTitleAlt: `Naveen Naidu`,
     siteTitle: 'Naveen Naidu',
     author: '@naveenaidu',
-    url: "https://naveenaidu.dev"
+    siteImage: `./banner.png`,
+    siteHeadline:  `ConfusedHooman's Space on Web`,
+    siteDescription: `ConfusedHooman's Space on Web`,
+    siteLanguage: `en`,
+    siteUrl: "https://naveenaidu.dev"
   },
   plugins: [
     {
