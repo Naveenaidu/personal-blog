@@ -1,0 +1,219 @@
+---
+title: "Learning BlueStore: A Gentle Introduction to Ceph's Storage Engine"
+date: 2026-08-24
+draft: false
+tags:
+  - ceph
+  - bluestore
+  - storage
+  - distributed-systems
+---
+
+Hey folks, it's been some time since I last blogged. I have decided to blog more
+frequently now (and I hope to keep this conviction up and not let it become yet
+another post of me "trying to blog frequently" ).
+
+Recap: I have been working at Ceph for almost 2 years now and recently have
+started working with the BlueStore team. The last few months since the switch,
+it feels like a haze has lifted from me. I am increasingly getting interested
+and awed by the working of Storage Systems and the principles that back it. I
+think I finally found an area that actually speaks to me, or is it too early to
+make this proclamation (?) - only future will tell.
+
+Paraphrasing the general consensus
+([1](https://skeptics.stackexchange.com/questions/8742/did-einstein-say-if-you-cant-explain-it-simply-you-dont-understand-it-well-en),
+[2](https://addyosmani.com/blog/write-learn/)) - **"To Write is to Learn"**, thus
+here we are - I will be writing blogs about my work with BlueStore, Storage
+systems and whatever learnings I keep having on the way.
+
+Disclaimer, I am pretty new to the field of (Distributed) Storage Systems so I
+am bound to make many mistakes, if you find me doing so - please feel free to
+let me know. I accept any/all criticisms.
+
+The first blog would be about a small Intro to BlueStore.
+
+Let's Begin....
+
+---
+
+## BlueStore
+
+Ceph stores data on physical machines using OSDs (Object Storage Daemons). These
+daemons need a backend storage engine - something that takes the request "write
+this object" and actually puts bytes into a disk. BlueStore is that engine. Ceph
+has 3 other storage engines before BlueStore, but notably - BlueStore replaced
+FileStore backend and became the default in Ceph Luminous. Why did BlueStore
+become the default, that is a post for another day.
+
+The key architectural decision: **BlueStore stores object data directly on raw
+block devices rather than a conventional file system**. BlueStore manages
+allocation and I/O itself, while RocksDB stores metadata to describe that data.
+
+## How BlueStore fits in the Ceph Storage Stack
+
+
+```
+Client (librados / RBD / CephFS / RGW)
+         │
+    RADOS (distributed object layer)
+         │
+    OSD daemon (one per disk)
+         │
+    ObjectStore API  ← BlueStore implements this
+         │
+    BlueStore
+    ├── RocksDB (metadata: onodes, extent maps, freelist)
+    │     └── BlueFS (minimal FS for RocksDB)
+    ├── Allocator (BitmapAllocator / FreelistManager)
+    │
+    └── Block Device(s) (raw disk for object data)
+          ├── BlueFS region (RocksDB WAL + DB)
+          └── Data region (object data, raw I/O)
+```
+
+The `ObjectStore` is the storage backend interface that defines how the OSD
+should interact with its local storage backend. This is the contract that
+BlueStore implements. This contract has operations like (`read/write`,
+`setattr/getattr`, `transactions` etc). This interface allows Ceph to swap
+different backends when needed.
+
+## Components of BlueStore
+
+### RocksDB
+
+RocksDB is a high performance embedded key-value store. This is used as the
+metadata store for BlueStore. BlueStore uses RocksDB because it is fast and
+crash-consistent, to store metadata like:
+- **onodes**: per-object metadata (size, extent map, checksums)
+- **extent maps**: which block ranges in disk belong to which objects
+- **freelist**: which blocks are allocated/free
+- **deferred write data**: small writes staged temporarily before writeback.
+
+When a client writes 1 MB object called "foo", BlueStore needs to update several
+pieces of metadata atomically:
+1. The **onode** for "foo" (object size, checksum)
+2. The **extent map** (object bytes 0 -  1 MB -> disk blocks 2801 - 3056)
+3. The **freelist** (mark blocks 2801-3056 as used)
+
+These are all separate key-value entries in RocksDB. RocksDB provides
+`WriteBatch` API that lets one group multiple key-value operations into a
+single atomic unit. Either all three keys get written or none of them do.
+RocksDB guarantees this by writing the entire batch to its WAL
+(write-ahead-log). If the process crashes mid-way, on recovery RocksDB replays
+the WAL and either the whole batch is there or it isn't.
+
+This way, if any crash happens between any of the steps, BlueStore can reclaim it!
+
+**TL;DR: Its job is to store everything BlueStore needs to find and describe
+the data.**
+
+### Allocators
+
+BlueStore manages raw block devices directly, so it needs its own mechanism to
+track which blocks are free and which are occupied. BlueStore has two related
+pieces involved in allocation:
+1. a **persistent representation** of allocation state, and
+2. an **in-memory allocator** used to make fast allocation decisions.
+
+This is a two-tier design:
+
+#### FreelistManager - the persistent record
+
+This is the on-disk truth about what's free. It lives inside RocksDB as
+key-value pairs. (Note the "freelist" in the previous section) When
+BlueStore allocates or frees block, the freelist manager update goes into the
+same `WriteBatch` as the rest of the metadata - this makes the allocation
+changes atomic with the write itself.
+
+We can't query the freelist manager (RocksDB key) on every write as it's not
+performant. That's where the in-memory allocator comes in.
+
+Note: There's also another path called as Null FreelistManager, which I aim to
+understand and cover in a future blog post.
+
+#### In-memory Allocator - the fast decision maker
+
+On mount, BlueStore reads the entire freelist from RocksDB and builds an
+in-memory structure for fast allocations. This is what actually answers the
+question "give me 64 KB of contiguous free space".
+
+BlueStore has various implementations available for in-memory allocators:
+`AVLAllocator` (two AVL trees), `BitmapAllocator` (hierarchical bitmap) and
+`HybridAllocator` (AVL tree with bitmap overflow). Each of these allocators make
+different tradeoffs between speed, memory use and allocation quality.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              TIER 1: Allocator  (lives in RAM)              │
+│                                                             │
+│  Fast in-memory data structure                              │
+│  Answers: "give me 64KB of free space" instantly            │
+│  Lost on every restart — rebuilt from Tier 2 on mount       │
+└─────────────────────────────────────────────────────────────┘
+                          ▲
+                          │ rebuilt on mount
+                          │
+┌─────────────────────────────────────────────────────────────┐
+│         TIER 2: BitmapFreelistManager  (lives in RocksDB)   │
+│                                                             │
+│  Persistent bitmap — one bit per disk block                 │
+│  Source of truth — survives crashes and restarts            │
+│  Updated atomically inside every RocksDB transaction        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### BlueFS
+
+RocksDB is designed to work with POSIX files - it creates, appends, reads and
+deletes SST files and WAL logs. BlueStore has no OS filesystem and its whole
+point was to avoid general purpose filesystem, so the options were to:
+1. Put RocksDB on XFS/ext4 - defeats the purpose, reintroduces the filesystem
+   overhead
+2. Rewrite RocksDB to work with raw block I/O - requires massive effort, hard to
+   maintain upstream
+3. Build a minimal filesystem that does only what RocksDB needs
+
+Option 3 was the approach taken, and BlueFS was created for this purpose. BlueFS
+is a minimal, purpose-built filesystem-like layer that exists for one reason: to
+give RocksDB a filesystem like interface on top of raw block device.
+
+```
+Block Device
+├── BlueFS region
+│     ├── RocksDB WAL files
+│     ├── RocksDB SST files
+│     └── BlueFS journal
+│     (BlueFS manages allocation here)
+│
+└── BlueStore data region
+      ├── Object data
+      (BlueStore's Allocator manages allocation here)
+```
+
+BlueFS allows multi device optimizations. BlueStore can be configured with three
+types of block devices
+1. **WAL device**: RocksDB WAL - Latency sensitive - fast NVMe ideal
+2. **DB device**: RocksDB SST files - Read-heavy, moderate size - SSD works well
+3. **Main device**: Object data - Bulk capacity - HDD is also fine
+
+All three things are by default on the same device, but BlueFS allows users to
+split them up if needed. For eg: You can put the WAL and DB on NVMe while the
+actual Object data lives on the HDD. BlueFS manages the WAL and DB device
+regions and BlueStore manages the main device directly. If the DB device fills
+up, BlueFS will allocate from the main (slow) device.
+
+On default setting, where all data share the same physical device - BlueStore
+and BlueFS manages their own regions independently. BlueStore knows where
+BlueFS's region starts and ends and doesn't touch it. There's also a
+coordination mechanism as mentioned previously: If BlueFS needs more space, it
+can request from BlueStore's free pool.
+
+---
+## Conclusion
+
+I focused this blog on trying to give a very brief introduction as to what
+BlueStore is. In future blogs - I aim to dive deeper into various other aspects,
+and keep sharing what I learn from my daily workings!
+
+Ciao until then!
+
