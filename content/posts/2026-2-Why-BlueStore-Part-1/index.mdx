@@ -37,8 +37,9 @@ to be a long one, so I have split it into three parts:
 
 1. **Part 1 (this post):** What a distributed system needs from its storage
    backend, and why file systems struggle to provide it.
-2. **Part 2:** Ceph's backends in order (EBOFS → FileStore on Btrfs → FileStore
-   on XFS → NewStore) and how each of them ran into these problems.
+2. **[Part 2](/why-is-blue-store-the-way-it-is-part-2-cephs-backends-in-detail):**
+   Ceph's backends in order (EBOFS → FileStore on Btrfs → FileStore on XFS →
+   NewStore) and how each of them ran into these problems.
 3. **Part 3:** How all of these learnings shaped BlueStore, and the price it
    pays for owning the disk.
 
@@ -126,7 +127,8 @@ Ceph's own path is the whole story in miniature:
 - Then XFS, for stability.
 - Then back to the raw disk with BlueStore.
 
-We'll explore each of them in detail in Part 2.
+We'll explore each of them in detail in
+[Part 2](/why-is-blue-store-the-way-it-is-part-2-cephs-backends-in-detail).
 
 File systems became the de facto standard for the following reasons:
 
@@ -155,8 +157,10 @@ distributed systems:
 2. Slow metadata operations
 3. Less support for new storage hardware
 
-We will explore each of these issues in this post, and in Part 2 we will map
-which backend had which issues and how they motivated the design of BlueStore.
+We will explore each of these issues in this post, and in
+[Part 2](/why-is-blue-store-the-way-it-is-part-2-cephs-backends-in-detail) we
+will map which backend had which issues and how they motivated the design of
+BlueStore.
 
 ### Problem 1: Transactions
 
@@ -649,5 +653,6 @@ top of them, the metadata ends up spread across directories, inodes and xattrs
 that can't be listed in the order Ceph needs, and new hardware has to wait until
 the file system supports it.
 
-In Part 2, we will see Ceph run into exactly these problems, one backend at a
-time, from EBOFS to NewStore.
+In [Part 2](/why-is-blue-store-the-way-it-is-part-2-cephs-backends-in-detail),
+we will see Ceph run into exactly these problems, one backend at a time, from
+EBOFS to NewStore.

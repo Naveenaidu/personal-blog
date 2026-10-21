@@ -1,0 +1,449 @@
+---
+title: "Why Is BlueStore the Way It Is? Part 2: Ceph's Backends in Detail"
+slug: /why-is-blue-store-the-way-it-is-part-2-cephs-backends-in-detail
+date: 2026-10-21
+draft: false
+tags:
+  - ceph
+  - bluestore
+  - storage
+  - distributed-systems
+---
+
+Hey folks, in the
+[last blog](/why-is-blue-store-the-way-it-is-part-1-why-file-systems-fall-short)
+we saw that there are three main problems with using file systems as a storage
+backend:
+
+1. Inefficient transactions
+2. Slow metadata operations
+3. Less support for new storage hardware
+
+Until now we have looked at the problems in the abstract. In this post we will
+walk through Ceph's backends in order and see which of these problems they had
+and how they got around them.
+
+As a reminder, this series is split into three parts:
+
+1. **[Part 1](/why-is-blue-store-the-way-it-is-part-1-why-file-systems-fall-short):**
+   What a distributed system needs from its storage backend, and why file
+   systems struggle to provide it.
+2. **Part 2 (this post):** Ceph's backends in order (EBOFS → FileStore on Btrfs
+   → FileStore on XFS → NewStore) and how each of them ran into these problems.
+3. **Part 3:** How all of these learnings shaped BlueStore, and the price it
+   pays for owning the disk.
+
+While reading the paper, one pattern that showed up was: "each workaround fixed
+one problem and created a new one". This says a lot about how software evolves
+and how there are always drawbacks with any solution, we just need to know which
+drawbacks we are comfortable with.
+
+```
+2005 - EBOFS (custom)
+2008 - FileStore/Btrfs (borrow FS transactions)
+2012 - FileStore/XFS (user-space WAL, directory split)
+2015 - NewStore (RocksDB as WAL)
+2017 - BlueStore (raw disk + RocksDB)
+```
+
+## EBOFS
+
+The first backend on Ceph was EBOFS (Extent and B-Tree-based Object File
+System). This was a custom user-space object store that ran directly on the raw
+disk.
+([commit](https://github.com/ceph/ceph/commit/18d9132a053846d7fd24ec512a83d4da106d6ed7)
+that added this store). This was mostly a small research system and got
+deprecated in 2008 in favour of using Btrfs.
+
+I was not able to find many resources on the specific issues EBOFS faced - Ceph
+had just started at that time, so there might not have been very many documented
+problems. What the paper does say is that EBOFS lacked features like
+transactions, deduplication, checksums and transparent compression, which Btrfs
+already had.
+
+## FileStore on Btrfs
+
+Btrfs came with features like transactions, checksums and copy-on-write that
+were required for a production-ready storage backend. Instead of implementing
+all of these features by itself, Ceph decided to borrow them.
+
+EBOFS hence got replaced by FileStore, which is an ObjectStore implementation
+that stores objects as files on a local file system. The FileStore's mapping is
+below:
+
+```
+ Ceph                      File system
+ ────                      ───────────
+ collection (PG)    ──►    directory
+ object             ──►    file
+ object attributes  ──►    xattrs (later LevelDB, when xattrs got too big)
+```
+
+As we discussed in the previous post, it is a must for the storage backend to
+have transactions. Let us see how FileStore went about implementing them.
+
+### Transactions: first attempt - borrow Btrfs's
+
+Btrfs exposed its internal transactions through a pair of ioctls,
+`BTRFS_IOC_TRANS_START` and `BTRFS_IOC_TRANS_END`. The first FileStore wrapped
+each Ceph transaction between them:
+
+```
+ioctl(TRANS_START)
+    write(obj_A, ...)          ← kernel applies this now
+    setxattr(obj_A, ...)       ← and this
+    write(pglog, ...)          ← OSD process dies here, or hits ENOSPC
+    write(pginfo, ...)
+ioctl(TRANS_END)
+```
+
+As we saw in _Leveraging the File System's Internal Transactions_ in Part 1,
+this approach breaks down the moment the OSD process dies (a software crash or a
+KILL signal) in the middle of a transaction while the kernel keeps running.
+Btrfs has no rollback, so it commits the half-done operations, leaving the data
+in an inconsistent state.
+
+One fix, [proposed by Sage Weil in 2009](https://lwn.net/Articles/361439/), was
+to introduce a single system call specifying the entire transaction. This way
+the kernel does the validation up front and can reserve the space and metadata
+for the worst case before modifying anything. It also provides a clean
+all-or-nothing boundary.
+
+```
+ioctl(TRANSACTION, [
+  {WRITE,    obj_A, off, data},
+  {SETXATTR, obj_A, "_", info},
+  {WRITE,    pglog, ...},
+  {WRITE,    pginfo, ...},
+])
+```
+
+This proved too costly for the following reasons:
+
+- Computing the worst-case scenario reservations for a mixed list of operations
+  is hard. This also over-reserves and hurts everyone sharing the file system.
+- Large transactions would hold a Btrfs transaction open longer, which delays
+  every other process.
+
+It was never merged, and Btrfs later deprecated the transaction ioctls
+altogether.
+
+### Transactions: second attempt - Btrfs snapshots
+
+The second attempt at fixing the rollback issue was to use the snapshot feature
+of Btrfs. The Btrfs snapshot is a cheap, point-in-time copy of a subvolume.
+
+Btrfs stores everything in copy-on-write B-trees. A subvolume is basically a
+pointer to a tree root.
+
+```
+subvol "current"  ──►  root R1
+                        ├── A
+                        └── B ── C (obj_A data)
+```
+
+Taking a snapshot doesn't copy any data. It creates a second root pointer to the
+same tree and bumps the reference counts:
+
+```
+"current"  ──►  R1 ─┐
+"snap_100" ──►  R1' ┴──► A, B, C   (shared, refcount = 2)
+```
+
+When you write to `obj_A`, copy-on-write kicks in - a new separate block called
+`C'` gets created with the data. Then all the parent blocks above C are also
+created as new blocks (in this example `B'`), including the root itself (`R2`),
+and `current` now points to the new root. The shared data remains as is.
+
+```
+"current"  ──►  R2 ──┬── B' ── C'   (new data)
+                     │
+                     └──────────┐
+                                ▼
+                                A    (shared, one copy on disk)
+                                ▲
+                     ┌──────────┘
+                     │
+"snap_100" ──►  R1' ─┴── B ── C     (old data, untouched)
+```
+
+As you can see here the `snap_100` still points to the old data.
+
+For this, FileStore added its own user-space journal (the WAL from Part 1) on
+top of Btrfs and used the snapshots as rollback points. The following is what
+happens in FileStore:
+
+1. Every few seconds: snapshot the Btrfs subvolume holding the objects, and
+   record `this snapshot = journal position N`
+2. On crash:
+   1. roll back to the last snapshot, disk is now exactly at position N
+   2. replay the journal from N, every txn is applied exactly once
+
+Note that, when we roll back to the last snapshot - the entire disk along with
+its data is rolled back - so replay always starts from a known state. The
+operations are still non-idempotent, but since they are never replayed on top of
+their own effects, the non-idempotent replay problem disappears.
+
+**No transaction is ever applied twice** in this approach.
+
+#### Problems:
+
+The design was sound but Btrfs at that time wasn't ready to handle Ceph's
+workload. Ceph's workload hit Btrfs kernel bugs and unmountable file systems in
+production clusters (ref:
+[1](https://lore.kernel.org/all/1994850.3pprtJuiTQ@pc10/T/),
+[2](https://github.com/ceph/ceph/commit/efc235895d862ef664188583bb77d0a3f8db5baa)).
+Constant small overwrites and snapshots fragmented both metadata and data badly
+and the performance degraded over time.
+
+During Ceph's years on Btrfs, the ObjectStore interface had grown so much that
+going back to EBOFS wasn't practical. Instead, FileStore was ported to run on
+XFS, ext4 and later ZFS. Of these, XFS became the de facto backend since it
+scaled better and had faster metadata performance.
+
+## FileStore on XFS
+
+XFS was more stable than Btrfs, but it had no cheap way to create snapshots. And
+as we saw in the previous section - without snapshots, the replays will make the
+state of data inconsistent.
+
+### Transactions: a pure user-space WAL
+
+Since there was no snapshot, the other way to do safe transactions with replay
+capability was by implementing a write-ahead log in user space. This is the WAL
+that we described in "Implementing the WAL in User Space". With this approach,
+FileStore ran into all the problems we listed previously:
+
+- Double writes, every byte went into the journal and into XFS.
+- Slow read-modify-write, a transaction's effect was readable only after it had
+  been committed to the journal and applied to XFS.
+- Non-idempotent replay, the replay ran on whatever was already on the disk.
+
+Since the last one was more damaging, as it deals with the correctness of data,
+Ceph tried to fix that first. It did the following to fix it:
+
+1. `syncfs()`, FileStore has to periodically flush the file system to the
+   physical device, so that the journal can be trimmed and replay starts from a
+   known sync point (the risky window from Part 1). On XFS, the only option was
+   `sync`, which flushes every file system on every drive in the node - very
+   expensive, since an OSD node usually has many drives. Hence Sage Weil added a
+   new [`syncfs()`](https://lwn.net/Articles/433384/) system call to Linux that
+   syncs just one file system.
+2. Guards, sequence numbers were stored with objects so that replay could skip
+   operations that were already applied. This was simple for writes, but very
+   hard for multi-object operations like clone and rename. For example:
+
+```
+op 41: write obj_A "hello"
+op 42: append obj_A " world"
+op 43: write obj_B "foo"
+```
+
+Ops 41 and 42 were applied before the crash, and obj_A's guard says 42. Op 43
+never reached the disk and obj_B's guard says 38. Without the guard, op 42 would
+run again and obj_A would have become "hello world world".
+
+During Replay:
+
+| Op              | Object's guard | Decision                            |
+| --------------- | -------------- | ----------------------------------- |
+| 41 write obj_A  | 42             | 41 ≤ 42, already applied, **skip**  |
+| 42 append obj_A | 42             | 42 ≤ 42, already applied, **skip**  |
+| 43 write obj_B  | 38             | 43 > 38, not applied yet, **apply** |
+
+This works for simple cases like the one above, but verifying guards for complex
+operations like clone and rename was hard, and the paper notes that the
+FileStore code ended up fragile and hard to maintain.
+
+### Metadata: Splitting directories
+
+The enumeration problem was described in the "Metadata Operations" section of
+Part 1. To avoid it, FileStore did not put all of a PG's objects in one
+directory. The objects were rather nested in subdirectories named after the last
+hex digits of their hash:
+
+```
+ /var/lib/ceph/osd/ceph-0/current/2.3f_head/
+ └── DIR_F/                                   hash ends in ...F
+     └── DIR_3/                               hash ends in ...3F
+         ├── DIR_0/                           hash ends in ...03F
+         │   └── rbd\udata.abc...09__head_0C11B03F__2
+         ├── DIR_1/                           hash ends in ...13F
+         │   └── rbd\udata.def...01__head_7A40913F__2
+         ├── DIR_2/                           hash ends in ...23F
+         │   └── rbd\udata.ghi...02__head_51C0D23F__2
+         └── DIR_A/                           hash ends in ...A3F
+             └── rbd\udata.abc...05__head_E5326A3F__2
+```
+
+Listing objects in hash order now meant we just had to walk the `DIR_X`
+directories in order and only sort a few hundred objects.
+
+```
+ walk DIR_0 → DIR_1 → DIR_2 → DIR_A …     (directory names are already in order)
+      │
+      ▼
+ readdir() each SMALL leaf  →  sort a few hundred names
+      │
+      ▼
+ objects in hash order, one small batch at a time
+```
+
+#### Problem
+
+- Splitting issues, when a leaf directory filled up - it had to split one level
+  deeper, physically moving all of its files into new subdirectories. At scale
+  this is expensive, and the entries scatter, hence the operation needs more
+  seeks.
+- Long names, names longer than XFS's 255-byte limit were truncated - with the
+  real name stored in an xattr. So listing needed an extra lookup per object.
+- xattr limits, object attributes outgrew what xattrs could hold.
+
+## NewStore: RocksDB as WAL
+
+In the previous sections, we saw that most of the problems occur because we are
+trying to pack the metadata into the file system. If we could segregate the data
+and the metadata of objects into different stores, that could eliminate a lot of
+problems.
+
+Hence NewStore tried to tackle the root cause of the FileStore's problem: **the
+file system was being used as the source of truth for metadata**.
+
+The design of NewStore is as below:
+
+```
+ NewStore
+  ├── metadata (object info, attrs, PG log, collections)  → RocksDB
+  └── object data                                      → files on XFS
+```
+
+With metadata being stored in a durable and atomic KV store, accessing it in a
+safe way becomes much easier.
+
+### Transaction: one atomic RocksDB batch
+
+FileStore had no real transactions; it faked them with a journal. NewStore used
+RocksDB's transactions and put all the metadata changes into a single
+transaction.
+
+```
+1. write(F7, data); fsync(F7)    ← object data goes into a file on XFS
+2. batch.put("O/A",      {version: 42, size: 12288, data_file: F7})
+   batch.put("pglog/42", "modify A v42")
+3. db.write(batch, sync=true)    ← all-or-nothing
+```
+
+If the crash happened before step 3, the data may exist on the disk but no
+metadata references it, and the stray data will just get picked up for cleaning
+later.
+
+### Read-modify-write: no waiting for the commit
+
+In FileStore, the next transaction couldn't see the previous one's result until
+it had been fsynced to the journal and applied to XFS. But in NewStore, the new
+state goes directly into RocksDB. This helps us to read the state immediately
+instead of waiting on the previous transaction's fsync.
+
+### Non-idempotent replay: resolve the "read" up front
+
+FileStore's journal stored operations like `clone a→b`, which read `a` at replay
+time. If `a` had already changed, replay copied the wrong data. NewStore
+resolves that read when the transaction is prepared, not when it's replayed.
+
+For eg:
+
+If we have `clone a->b`, if `a` is small - the bytes are copied into the
+transaction itself. The transaction then reads something like
+`b = 4 (exact value)`.
+
+If `a` is large, no copy is done. We point `a` and `b` both to the same data and
+mark it as read-only (copy-on-write). Any new writes then go to a new location.
+The transaction here only records pointers.
+
+Either way, nothing in the transaction depends on the current state of the disk,
+so replay is always safe.
+
+### Enumeration: sorted keys instead of directories
+
+In FileStore, we stored objects under PG directories. In RocksDB, the keys are
+always sorted.
+
+A simplified view of the keys:
+
+```
+O/2/0C11B03F/rbd_data.abc...09
+O/2/51C0D23F/rbd_data.ghi...02
+O/2/7A40913F/rbd_data.def...01
+O/2/E5326A3F/rbd_data.abc...05
+```
+
+In NewStore, every object's metadata is a key in RocksDB, and the key starts
+with the pool and the object's hash followed by the object name. Since RocksDB
+always keeps its keys sorted, all of the PG's objects sit next to each other.
+
+### Directory splitting: nothing to split
+
+Since there are no directories, there are no splitting storms. When Ceph splits
+a PG into two, NewStore doesn't move any files. The new PG is just a different
+key range.
+
+### Problems
+
+As explained in Part 1, NewStore had the problem of a journal on top of a
+journal. Object data still lived in files on XFS, and RocksDB's own files lived
+on XFS too. Every `fsync` looked like this:
+
+```
+ create one object in NewStore:
+   fsync(data file)        → flush data      + flush XFS journal   = 2
+   fsync(RocksDB WAL)      → flush log entry + flush XFS journal   = 2
+                                                                   ─────
+                                                     total flushes:  4
+
+ same work on a raw disk:                                          = 2
+```
+
+## Summary of Ceph Backends
+
+### Putting it together
+
+|                                   | **EBOFS**                                | **FileStore / Btrfs**                                                                                                    | **FileStore / XFS**                                                                                                        | **NewStore**                                                                              |
+| --------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Era**                           | 2005 – 2008                              | ~2008 – 2012                                                                                                             | ~2012 – 2017                                                                                                               | ~2015 (never in production)                                                               |
+| **Runs on**                       | Raw disk (user space)                    | Btrfs                                                                                                                    | XFS (also ext4, ZFS)                                                                                                       | XFS (data files + RocksDB files)                                                          |
+| **How data is stored**            | Custom extents on disk                   | Object = file, PG = directory                                                                                            | Object = file, PG = nested hash directories                                                                                | Object data = files on XFS                                                                |
+| **How metadata is stored**        | Custom B-trees (object table, free list) | Directories + xattrs, large attrs in LevelDB                                                                             | Directories + xattrs, large attrs and omap in LevelDB                                                                      | All in RocksDB as sorted keys                                                             |
+| **How transactions work**         | Its own code, owns the whole disk        | 1st: Btrfs `TRANS_START/END` ioctls (no rollback). 2nd: user-space journal + Btrfs snapshots, rolling back before replay | User-space WAL with full data journaling, `syncfs()` to trim, sequence-number guards for replay                            | One atomic RocksDB write batch per transaction                                            |
+| **Double writes**                 | No                                       | Yes (journal + Btrfs)                                                                                                    | Yes, every byte written twice                                                                                              | Gone for new objects, still there for overwrites                                          |
+| **Read-modify-write**             | —                                        | Waits for journal commit + apply                                                                                         | Waits for journal fsync + apply to XFS                                                                                     | Read new state from RocksDB immediately                                                   |
+| **Crash replay**                  | —                                        | Safe: roll back to snapshot, replay once                                                                                 | Risky: replays on top of applied state; guards are fragile                                                                 | Safe: reads resolved at prepare time, puts are idempotent                                 |
+| **Listing objects (enumeration)** | Own B-tree                               | `readdir()` on large directories: slow, unordered                                                                        | Walk hash directories, sort small leaves                                                                                   | Range scan over sorted keys                                                               |
+| **Clones / snapshots**            | —                                        | Cheap (Btrfs copy-on-write)                                                                                              | Expensive: full physical copy                                                                                              | Copy-on-write (pointers + read-only data)                                                 |
+| **Erasure-coded overwrites**      | —                                        | —                                                                                                                        | Impractical (each OSD copies its chunk)                                                                                    | —                                                                                         |
+| **What finally broke it**         | Lacked checksums, compression, CoW       | Btrfs instability, data and metadata fragmentation                                                                       | Halved bandwidth, fragile replay, splitting storms (7 min SSD / 120 min HDD stalls), slow clones, writeback latency spikes | Journal on journal: 4 flushes per object vs 2 on raw disk (70–80% slower object creation) |
+| **What it passed on**             | Idea of owning the disk                  | The journal, and the cost of depending on one FS's features                                                              | The diagnosis: the FS shouldn't be the source of truth for metadata                                                        | Metadata in RocksDB, the core of BlueStore                                                |
+
+## Wrapping Up
+
+Taking a look back at all of these backends, the pattern from the start of this
+post occurs repeatedly, where each workaround fixed one problem and created a
+new one:
+
+1. EBOFS lacked features like transactions and checksums, so Ceph borrowed them
+   from Btrfs.
+2. Btrfs's transactions had no rollback. Snapshots fixed that, but Btrfs itself
+   was not stable enough for Ceph's workload.
+3. XFS was stable, but without snapshots we needed a user-space journal, guards
+   for replay and directory splitting for enumeration - each with its own cost.
+4. NewStore moved the metadata into RocksDB and fixed most of FileStore's
+   problems, but the object data and RocksDB still lived on XFS, and we ended up
+   with a journal on top of a journal.
+
+One important take-away is, with every step - Ceph needed a little less from the
+file system. Maybe that is what led the developers to ask the question "What if
+we remove the file system completely?"
+
+And that is exactly what BlueStore does. In Part 3 - we will look at how all of
+these learnings shaped BlueStore!
+
+Ciao until then!
